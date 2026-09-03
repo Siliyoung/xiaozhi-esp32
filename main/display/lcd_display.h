@@ -8,6 +8,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <font_emoji.h>
 
+#include <array>
 #include <atomic>
 #include <memory>
 
@@ -34,6 +35,41 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
+    lv_obj_t* server_status_panel_ = nullptr;
+    lv_obj_t* server_status_time_label_ = nullptr;
+    lv_obj_t* server_cpu_value_label_ = nullptr;
+    lv_obj_t* server_disk_value_label_ = nullptr;
+    lv_obj_t* server_network_value_label_ = nullptr;
+    lv_obj_t* server_cpu_chart_ = nullptr;
+    lv_obj_t* server_disk_chart_ = nullptr;
+    lv_obj_t* server_network_chart_ = nullptr;
+    lv_chart_series_t* server_cpu_series_ = nullptr;
+    lv_chart_series_t* server_disk_series_ = nullptr;
+    lv_chart_series_t* server_network_rx_series_ = nullptr;
+    lv_chart_series_t* server_network_tx_series_ = nullptr;
+    std::array<float, 30> server_cpu_history_{};
+    std::array<float, 30> server_network_rx_history_{};
+    std::array<float, 30> server_network_tx_history_{};
+    float server_cpu_scale_percent_ = 5.0f;
+    float server_network_scale_kbps_ = 5.0f;
+    lv_obj_t* pomodoro_panel_ = nullptr;
+    lv_obj_t* pomodoro_arc_ = nullptr;
+    lv_obj_t* pomodoro_time_label_ = nullptr;
+    lv_obj_t* pomodoro_state_label_ = nullptr;
+    lv_obj_t* pomodoro_name_label_ = nullptr;
+    lv_obj_t* pomodoro_hint_label_ = nullptr;
+    lv_obj_t* reminder_panel_ = nullptr;
+    lv_obj_t* reminder_kind_label_ = nullptr;
+    lv_obj_t* reminder_title_label_ = nullptr;
+    lv_obj_t* reminder_time_label_ = nullptr;
+    lv_obj_t* clock_panel_ = nullptr;
+    lv_obj_t* clock_time_label_ = nullptr;
+    lv_obj_t* clock_date_label_ = nullptr;
+    lv_obj_t* clock_city_label_ = nullptr;
+    lv_obj_t* clock_battery_label_ = nullptr;
+    lv_obj_t* clock_condition_label_ = nullptr;
+    lv_obj_t* clock_temperature_label_ = nullptr;
+    lv_obj_t* clock_humidity_label_ = nullptr;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
 
     void InitializeLcdThemes();
@@ -51,6 +87,15 @@ public:
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
     virtual void SetupUI() override;
+    virtual void ShowServerStatus(float cpu_percent, float disk_percent, float network_rx_kbps, float network_tx_kbps, const char* sampled_at) override;
+    virtual void HideServerStatus() override;
+    virtual void ShowPomodoro(const char* state, int remaining_seconds, int total_seconds, const char* label) override;
+    virtual void HidePomodoro() override;
+    virtual void ShowReminder(const char* kind, const char* title, const char* time_text) override;
+    virtual void HideReminder() override;
+    virtual void ShowClock(const char* time_text, const char* date_text, int battery_percent,
+        bool charging, const char* city, const char* condition, float temperature_c, int humidity_percent) override;
+    virtual void HideClock() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
     

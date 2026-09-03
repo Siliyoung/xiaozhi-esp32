@@ -71,7 +71,11 @@ public:
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();
-    virtual void SendAbortSpeaking(AbortReason reason);
+    virtual void SendAbortSpeaking(AbortReason reason, uint32_t metric_id = 0,
+        int64_t client_uptime_ms = 0);
+    virtual void SendBargeInMetric(uint32_t metric_id, uint32_t round_trip_ms,
+        uint32_t local_clear_ms, int wifi_rssi_dbm, uint32_t free_sram_bytes,
+        uint32_t min_free_sram_bytes, uint32_t uplink_frames_dropped);
     virtual void SendMcpMessage(const std::string& message);
 
 protected:

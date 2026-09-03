@@ -1,0 +1,23 @@
+diff --git a/main/application.cc b/main/application.cc
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -906,10 +906,20 @@ void Application::OnStateChanged(DeviceState state) {
+         case kDeviceStateSpeaking:
+             display->SetStatus(Lang::Strings::SPEAKING);
+
+             if (listening_mode_ != kListeningModeRealtime) {
+                 audio_service_.EnableVoiceProcessing(false);
+-                // Only AFE wake word can be detected in speaking mode
++                // ESP32-C5 uses the lightweight EspWakeWord implementation rather
++                // than AfeWakeWord. Keep wake-word detection active while audio is
++                // playing so saying the wake word can send an abort and start a
++                // new turn. Ordinary microphone streaming remains disabled.
++#if CONFIG_IDF_TARGET_ESP32C5
++                audio_service_.EnableWakeWordDetection(true);
++#else
++                // Other targets require AFE wake-word support during playback.
+                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
++#endif
+             }
+             audio_service_.ResetDecoder();
+             break;

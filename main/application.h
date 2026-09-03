@@ -15,6 +15,8 @@
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state.h"
+#include "pomodoro_timer.h"
+#include "reminder_scheduler.h"
 #include "device_state_machine.h"
 
 // Main event bits
@@ -135,13 +137,34 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
+    PomodoroTimer pomodoro_timer_;
+    std::string pomodoro_label_ = "番茄钟";
+    bool pomodoro_page_visible_ = false;
+    ReminderScheduler reminder_scheduler_;
+    ScheduledReminder active_reminder_;
+    bool reminder_page_visible_ = false;
+    int reminder_ring_ticks_ = 0;
+    std::string clock_city_ = "位置更新中";
+    std::string clock_condition_ = "天气更新中";
+    float clock_temperature_c_ = -1000.0f;
+    int clock_humidity_percent_ = -1;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    bool server_dashboard_active_ = false;
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+    TaskHandle_t clock_weather_task_handle_ = nullptr;
+    int64_t last_clock_weather_refresh_us_ = 0;
+    uint32_t barge_in_metric_id_ = 0;
+    int64_t barge_in_abort_sent_us_ = 0;
+    uint32_t barge_in_local_clear_ms_ = 0;
+    uint32_t barge_in_uplink_frames_dropped_ = 0;
+    int barge_in_wifi_rssi_dbm_ = 0;
+    uint32_t barge_in_free_sram_bytes_ = 0;
+    uint32_t barge_in_min_free_sram_bytes_ = 0;
 
 
     // Event handlers
@@ -155,6 +178,22 @@ private:
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
+    void HandlePomodoroCommand(const std::string& action, int duration_seconds, const std::string& label);
+    void UpdatePomodoroTimer();
+    void HandleReminderCommand(const std::string& action, int id, int64_t trigger_at_epoch,
+        const std::string& title, const std::string& kind);
+    void UpdateReminderSchedule();
+    void ShowReminderPage();
+    void DismissReminder();
+    void ShowPomodoroPage();
+    void SuspendPomodoroPage();
+    void FinishPomodoro();
+    void UpdateClockFace();
+    void UpdateClockContext(const std::string& city, const std::string& condition,
+        float temperature_c, int humidity_percent);
+    void RefreshClockWeather();
+    void CompleteBargeInLocalClear(uint32_t uplink_frames_dropped);
+    void ReportBargeInStopReceived(int64_t received_us);
 
     // Activation task (runs in background)
     void ActivationTask();

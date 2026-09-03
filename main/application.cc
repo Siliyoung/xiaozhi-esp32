@@ -11,13 +11,20 @@
 #include "settings.h"
 
 #include <cstring>
+#include <ctime>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
+#include <esp_wifi.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
 
 #define TAG "Application"
+
+namespace {
+constexpr int64_t kClockWeatherRefreshIntervalUs = 30LL * 60LL * 1000000LL;
+}
 
 
 Application::Application() {
@@ -249,7 +256,16 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            UpdatePomodoroTimer();
+            UpdateReminderSchedule();
+            UpdateClockFace();
         
+            const int64_t now_us = esp_timer_get_time();
+            if (GetDeviceState() == kDeviceStateIdle &&
+                    now_us - last_clock_weather_refresh_us_ >= kClockWeatherRefreshIntervalUs) {
+                RefreshClockWeather();
+            }
+
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
@@ -300,9 +316,15 @@ void Application::HandleActivationDoneEvent() {
     ESP_LOGI(TAG, "Activation done");
 
     SystemInfo::PrintHeapStats();
-    SetDeviceState(kDeviceStateIdle);
-
     has_server_time_ = ota_->HasServerTime();
+    if (ota_->HasClockContext()) {
+        clock_city_ = ota_->GetClockCity();
+        clock_condition_ = ota_->GetClockCondition();
+        clock_temperature_c_ = ota_->GetClockTemperatureC();
+        clock_humidity_percent_ = ota_->GetClockHumidityPercent();
+    }
+    last_clock_weather_refresh_us_ = esp_timer_get_time();
+    SetDeviceState(kDeviceStateIdle);
 
     auto display = Board::GetInstance().GetDisplay();
     std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
@@ -514,6 +536,10 @@ void Application::InitializeProtocol() {
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
+            if (pomodoro_timer_.state() != PomodoroState::kIdle && !server_dashboard_active_) {
+                pomodoro_page_visible_ = true;
+                ShowPomodoroPage();
+            }
             SetDeviceState(kDeviceStateIdle);
         });
     });
@@ -529,12 +555,18 @@ void Application::InitializeProtocol() {
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                Schedule([this]() {
+                const int64_t received_us = esp_timer_get_time();
+                Schedule([this, received_us]() {
+                    ReportBargeInStopReceived(received_us);
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
+                        }
+                        if (pomodoro_timer_.state() != PomodoroState::kIdle && !server_dashboard_active_) {
+                            pomodoro_page_visible_ = true;
+                            ShowPomodoroPage();
                         }
                     }
                 });
@@ -553,6 +585,105 @@ void Application::InitializeProtocol() {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
+                });
+            }
+        } else if (strcmp(type->valuestring, "clock_context") == 0) {
+            auto data = cJSON_GetObjectItem(root, "data");
+            if (!cJSON_IsObject(data)) {
+                ESP_LOGW(TAG, "Clock context message is missing data");
+                return;
+            }
+            auto city = cJSON_GetObjectItem(data, "city");
+            auto condition = cJSON_GetObjectItem(data, "condition");
+            auto temperature = cJSON_GetObjectItem(data, "temperature_c");
+            auto humidity = cJSON_GetObjectItem(data, "humidity_percent");
+            if (!cJSON_IsString(city) || !cJSON_IsString(condition)) {
+                ESP_LOGW(TAG, "Clock context requires city and condition");
+                return;
+            }
+            const float temperature_c = cJSON_IsNumber(temperature)
+                ? static_cast<float>(temperature->valuedouble) : -1000.0f;
+            const int humidity_percent = cJSON_IsNumber(humidity) ? humidity->valueint : -1;
+            Schedule([this, city_text = std::string(city->valuestring),
+                    condition_text = std::string(condition->valuestring),
+                    temperature_c, humidity_percent]() {
+                UpdateClockContext(city_text, condition_text, temperature_c, humidity_percent);
+            });
+        } else if (strcmp(type->valuestring, "pomodoro") == 0) {
+            auto action = cJSON_GetObjectItem(root, "action");
+            auto duration = cJSON_GetObjectItem(root, "duration_seconds");
+            auto label = cJSON_GetObjectItem(root, "label");
+            if (!cJSON_IsString(action)) {
+                ESP_LOGW(TAG, "Pomodoro command requires an action");
+                return;
+            }
+            int duration_seconds = cJSON_IsNumber(duration) ? duration->valueint : 0;
+            std::string timer_label = cJSON_IsString(label) ? label->valuestring : "番茄钟";
+            Schedule([this, action_name = std::string(action->valuestring), duration_seconds, timer_label]() {
+                HandlePomodoroCommand(action_name, duration_seconds, timer_label);
+            });
+        } else if (strcmp(type->valuestring, "reminder") == 0) {
+            auto action = cJSON_GetObjectItem(root, "action");
+            auto id = cJSON_GetObjectItem(root, "id");
+            auto trigger = cJSON_GetObjectItem(root, "trigger_at_epoch");
+            auto title = cJSON_GetObjectItem(root, "title");
+            auto kind = cJSON_GetObjectItem(root, "kind");
+            if (!cJSON_IsString(action) || !cJSON_IsNumber(id)) {
+                ESP_LOGW(TAG, "Reminder command requires action and id");
+                return;
+            }
+            const int reminder_id = id->valueint;
+            const int64_t trigger_epoch = cJSON_IsNumber(trigger)
+                ? static_cast<int64_t>(trigger->valuedouble) : 0;
+            const std::string reminder_title = cJSON_IsString(title)
+                ? title->valuestring : "提醒时间到了";
+            const std::string reminder_kind = cJSON_IsString(kind)
+                ? kind->valuestring : "reminder";
+            Schedule([this, action_name = std::string(action->valuestring), reminder_id,
+                    trigger_epoch, reminder_title, reminder_kind]() {
+                HandleReminderCommand(action_name, reminder_id, trigger_epoch,
+                    reminder_title, reminder_kind);
+            });
+        } else if (strcmp(type->valuestring, "server_status") == 0) {
+            auto state = cJSON_GetObjectItem(root, "state");
+            if (cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0) {
+                Schedule([this, display]() {
+                    server_dashboard_active_ = false;
+                    display->HideServerStatus();
+                });
+                return;
+            }
+            auto data = cJSON_GetObjectItem(root, "data");
+            if (cJSON_IsObject(data)) {
+                auto number_or_missing = [data](const char* name) {
+                    auto item = cJSON_GetObjectItem(data, name);
+                    return cJSON_IsNumber(item) ? static_cast<float>(item->valuedouble) : -1.0f;
+                };
+                auto sampled_at_item = cJSON_GetObjectItem(data, "sampled_at");
+                std::string sampled_at = cJSON_IsString(sampled_at_item) ? sampled_at_item->valuestring : "--:--:--";
+                float cpu_percent = number_or_missing("cpu_used_percent");
+                float disk_percent = number_or_missing("disk_used_percent");
+                float network_rx_kbps = number_or_missing("network_rx_kbps");
+                float network_tx_kbps = number_or_missing("network_tx_kbps");
+                ESP_LOGI(TAG, "Server dashboard: CPU %.1f%% disk %.1f%% RX %.1f kbps TX %.1f kbps",
+                    cpu_percent, disk_percent, network_rx_kbps, network_tx_kbps);
+                Schedule([this, display, cpu_percent, disk_percent, network_rx_kbps, network_tx_kbps, sampled_at]() {
+                    display->HideClock();
+                    pomodoro_page_visible_ = false;
+                    display->HidePomodoro();
+                    display->ShowServerStatus(cpu_percent, disk_percent, network_rx_kbps, network_tx_kbps, sampled_at.c_str());
+                });
+            } else if (!cJSON_IsString(state) || strcmp(state->valuestring, "active") != 0) {
+                ESP_LOGW(TAG, "Server status message is missing data");
+            }
+            if (cJSON_IsString(state) && strcmp(state->valuestring, "active") == 0) {
+                Schedule([this]() {
+                    server_dashboard_active_ = true;
+                    pomodoro_page_visible_ = false;
+                    Board::GetInstance().GetDisplay()->HidePomodoro();
+                    audio_service_.EnableVoiceProcessing(false);
+                    audio_service_.EnableWakeWordDetection(true);
+                    ESP_LOGI(TAG, "Server dashboard passive mode enabled");
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
@@ -726,6 +857,9 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+    if (reminder_page_visible_) {
+        DismissReminder();
+    }
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -774,6 +908,16 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    if (reminder_page_visible_) {
+        DismissReminder();
+    }
+    // A wake word is also the explicit exit action for persistent tool dashboards.
+    auto display = Board::GetInstance().GetDisplay();
+    display->HideServerStatus();
+    if (pomodoro_timer_.state() == PomodoroState::kFinished) {
+        pomodoro_timer_.Cancel();
+    }
+    SuspendPomodoroPage();
     if (!protocol_) {
         return;
     }
@@ -781,6 +925,24 @@ void Application::HandleWakeWordDetectedEvent() {
     auto state = GetDeviceState();
     auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
+
+    if (server_dashboard_active_) {
+        server_dashboard_active_ = false;
+        AbortSpeaking(kAbortReasonWakeWordDetected);
+        audio_service_.ResetDecoder();
+        uint32_t dropped_frames = 0;
+        while (audio_service_.PopPacketFromSendQueue()) {
+            ++dropped_frames;
+        }
+        CompleteBargeInLocalClear(dropped_frames);
+        // Force a real state transition so HandleStateChangedEvent restarts
+        // voice processing even though the dashboard was parked in listening state.
+        SetDeviceState(kDeviceStateIdle);
+        play_popup_on_listening_ = true;
+        SetListeningMode(GetDefaultListeningMode());
+        ESP_LOGI(TAG, "Server dashboard dismissed by wake word");
+        return;
+    }
 
     if (state == kDeviceStateIdle) {
         audio_service_.EncodeWakeWord();
@@ -799,12 +961,19 @@ void Application::HandleWakeWordDetectedEvent() {
         ContinueWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
+        // Drop any Opus packets and decoded PCM already buffered on the device.
+        // Otherwise the listening-state transition waits for the old response
+        // to finish playing, which makes wake-word barge-in appear delayed.
+        audio_service_.ResetDecoder();
         // Clear send queue to avoid sending residues to server
-        while (audio_service_.PopPacketFromSendQueue());
+        uint32_t dropped_frames = 0;
+        while (audio_service_.PopPacketFromSendQueue()) {
+            ++dropped_frames;
+        }
+        CompleteBargeInLocalClear(dropped_frames);
 
         if (state == kDeviceStateListening) {
             protocol_->SendStartListening(GetDefaultListeningMode());
-            audio_service_.ResetDecoder();
             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             // Re-enable wake word detection as it was stopped by the detection itself
             audio_service_.EnableWakeWordDetection(true);
@@ -857,15 +1026,20 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    if (new_state != kDeviceStateIdle) {
+        display->HideClock();
+    }
     
     switch (new_state) {
         case kDeviceStateUnknown:
+            break;
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            UpdateClockFace();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -908,8 +1082,16 @@ void Application::HandleStateChangedEvent() {
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
-                // Only AFE wake word can be detected in speaking mode
+                // ESP32-C5 uses the lightweight EspWakeWord implementation rather
+                // than AfeWakeWord. Keep wake-word detection active while audio is
+                // playing so saying the wake word can send an abort and start a
+                // new turn. Ordinary microphone streaming remains disabled.
+#if CONFIG_IDF_TARGET_ESP32C5
+                audio_service_.EnableWakeWordDetection(true);
+#else
+                // Other targets require AFE wake-word support during playback.
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+#endif
             }
             audio_service_.ResetDecoder();
             break;
@@ -935,8 +1117,61 @@ void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
     if (protocol_) {
-        protocol_->SendAbortSpeaking(reason);
+        if (reason == kAbortReasonWakeWordDetected && GetDeviceState() == kDeviceStateSpeaking) {
+            if (++barge_in_metric_id_ == 0) {
+                ++barge_in_metric_id_;
+            }
+            barge_in_abort_sent_us_ = esp_timer_get_time();
+            protocol_->SendAbortSpeaking(reason, barge_in_metric_id_,
+                barge_in_abort_sent_us_ / 1000);
+            ESP_LOGI(TAG, "Barge-in abort sent id=%lu uptime_ms=%lld",
+                static_cast<unsigned long>(barge_in_metric_id_),
+                static_cast<long long>(barge_in_abort_sent_us_ / 1000));
+        } else {
+            protocol_->SendAbortSpeaking(reason);
+        }
     }
+}
+
+void Application::CompleteBargeInLocalClear(uint32_t uplink_frames_dropped) {
+    if (barge_in_abort_sent_us_ <= 0) {
+        return;
+    }
+    const int64_t cleared_us = esp_timer_get_time();
+    const int64_t elapsed_us = cleared_us >= barge_in_abort_sent_us_
+        ? cleared_us - barge_in_abort_sent_us_ : 0;
+    barge_in_local_clear_ms_ = static_cast<uint32_t>(elapsed_us / 1000);
+    barge_in_uplink_frames_dropped_ = uplink_frames_dropped;
+    barge_in_free_sram_bytes_ = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    barge_in_min_free_sram_bytes_ = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    wifi_ap_record_t ap_info = {};
+    barge_in_wifi_rssi_dbm_ = esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK ? ap_info.rssi : 0;
+    ESP_LOGI(TAG,
+        "Barge-in audio cleared id=%lu local_ms=%lu rssi_dbm=%d free_sram=%lu min_free_sram=%lu uplink_dropped=%lu",
+        static_cast<unsigned long>(barge_in_metric_id_),
+        static_cast<unsigned long>(barge_in_local_clear_ms_),
+        barge_in_wifi_rssi_dbm_,
+        static_cast<unsigned long>(barge_in_free_sram_bytes_),
+        static_cast<unsigned long>(barge_in_min_free_sram_bytes_),
+        static_cast<unsigned long>(barge_in_uplink_frames_dropped_));
+}
+
+void Application::ReportBargeInStopReceived(int64_t received_us) {
+    if (barge_in_abort_sent_us_ <= 0 || received_us < barge_in_abort_sent_us_) {
+        return;
+    }
+    const uint32_t round_trip_ms = static_cast<uint32_t>(
+        (received_us - barge_in_abort_sent_us_) / 1000);
+    ESP_LOGI(TAG, "Barge-in stop received id=%lu round_trip_ms=%lu",
+        static_cast<unsigned long>(barge_in_metric_id_),
+        static_cast<unsigned long>(round_trip_ms));
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->SendBargeInMetric(
+            barge_in_metric_id_, round_trip_ms, barge_in_local_clear_ms_,
+            barge_in_wifi_rssi_dbm_, barge_in_free_sram_bytes_,
+            barge_in_min_free_sram_bytes_, barge_in_uplink_frames_dropped_);
+    }
+    barge_in_abort_sent_us_ = 0;
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
@@ -1097,6 +1332,270 @@ void Application::SetAecMode(AecMode mode) {
             protocol_->CloseAudioChannel();
         }
     });
+}
+
+void Application::HandlePomodoroCommand(const std::string& action, int duration_seconds, const std::string& label) {
+    const int64_t now_us = esp_timer_get_time();
+    bool changed = false;
+    if (action == "start") {
+        changed = pomodoro_timer_.Start(duration_seconds, now_us);
+        if (changed) {
+            pomodoro_label_ = label.empty() ? "番茄钟" : label.substr(0, 40);
+        }
+    } else if (action == "pause") {
+        changed = pomodoro_timer_.Pause(now_us);
+    } else if (action == "resume") {
+        changed = pomodoro_timer_.Resume(now_us);
+    } else if (action == "cancel") {
+        pomodoro_timer_.Cancel();
+        pomodoro_page_visible_ = false;
+        Board::GetInstance().GetDisplay()->HidePomodoro();
+        ESP_LOGI(TAG, "Pomodoro cancelled");
+        if (GetDeviceState() == kDeviceStateIdle) {
+            UpdateClockFace();
+        }
+        return;
+    } else if (action == "show" || action == "status") {
+        changed = pomodoro_timer_.state() != PomodoroState::kIdle;
+    } else {
+        ESP_LOGW(TAG, "Unknown Pomodoro action: %s", action.c_str());
+        return;
+    }
+
+    if (!changed) {
+        ESP_LOGW(TAG, "Pomodoro action rejected: %s", action.c_str());
+        return;
+    }
+    server_dashboard_active_ = false;
+    auto display = Board::GetInstance().GetDisplay();
+    display->HideServerStatus();
+    pomodoro_page_visible_ = true;
+    ShowPomodoroPage();
+    ESP_LOGI(TAG, "Pomodoro action=%s remaining=%d total=%d", action.c_str(),
+        pomodoro_timer_.RemainingSeconds(now_us), pomodoro_timer_.total_seconds());
+}
+
+void Application::UpdateClockContext(const std::string& city, const std::string& condition,
+        float temperature_c, int humidity_percent) {
+    clock_city_ = city.empty() ? "位置未知" : city.substr(0, 40);
+    clock_condition_ = condition.empty() ? "天气未知" : condition.substr(0, 40);
+    clock_temperature_c_ = temperature_c;
+    clock_humidity_percent_ = humidity_percent;
+    ESP_LOGI(TAG, "Clock context updated: city=%s weather=%s temp=%.1f humidity=%d",
+        clock_city_.c_str(), clock_condition_.c_str(),
+        clock_temperature_c_, clock_humidity_percent_);
+    UpdateClockFace();
+}
+
+void Application::RefreshClockWeather() {
+    if (clock_weather_task_handle_ != nullptr) {
+        return;
+    }
+
+    // Record the attempt before starting the task so a failed request cannot create
+    // a tight retry loop on the one-second clock tick.
+    last_clock_weather_refresh_us_ = esp_timer_get_time();
+    const BaseType_t created = xTaskCreate([](void* arg) {
+        auto* app = static_cast<Application*>(arg);
+        Ota clock_context;
+        const esp_err_t err = clock_context.RefreshClockContext();
+        if (err == ESP_OK && clock_context.HasClockContext()) {
+            const std::string city = clock_context.GetClockCity();
+            const std::string condition = clock_context.GetClockCondition();
+            const float temperature_c = clock_context.GetClockTemperatureC();
+            const int humidity_percent = clock_context.GetClockHumidityPercent();
+            app->Schedule([app, city, condition, temperature_c, humidity_percent]() {
+                app->UpdateClockContext(city, condition, temperature_c, humidity_percent);
+            });
+        } else {
+            ESP_LOGW(TAG, "Automatic clock weather refresh failed: %s", esp_err_to_name(err));
+        }
+        app->clock_weather_task_handle_ = nullptr;
+        vTaskDelete(nullptr);
+    }, "clock_weather", 4096 * 2, this, 2, &clock_weather_task_handle_);
+
+    if (created != pdPASS) {
+        clock_weather_task_handle_ = nullptr;
+        ESP_LOGW(TAG, "Failed to create automatic clock weather refresh task");
+    }
+}
+
+void Application::UpdateClockFace() {
+    if (GetDeviceState() != kDeviceStateIdle || server_dashboard_active_ ||
+            pomodoro_page_visible_ || reminder_page_visible_) {
+        return;
+    }
+
+    char time_text[8] = "--:--";
+    char date_text[32] = "---- -- --";
+    const time_t now = time(nullptr);
+    if (has_server_time_ && now > 1700000000) {
+        struct tm local_time = {};
+        localtime_r(&now, &local_time);
+        static const char* weekdays[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+        snprintf(time_text, sizeof(time_text), "%02d:%02d", local_time.tm_hour, local_time.tm_min);
+        snprintf(date_text, sizeof(date_text), "%04d-%02d-%02d  %s",
+            local_time.tm_year + 1900, local_time.tm_mon + 1, local_time.tm_mday,
+            weekdays[local_time.tm_wday]);
+    }
+
+    int battery_percent = -1;
+    bool charging = false;
+    bool discharging = false;
+    auto& board = Board::GetInstance();
+    board.GetBatteryLevel(battery_percent, charging, discharging);
+    board.GetDisplay()->ShowClock(
+        time_text, date_text, battery_percent, charging,
+        clock_city_.c_str(), clock_condition_.c_str(),
+        clock_temperature_c_, clock_humidity_percent_);
+}
+
+void Application::UpdatePomodoroTimer() {
+    const int64_t now_us = esp_timer_get_time();
+    if (pomodoro_timer_.Tick(now_us)) {
+        FinishPomodoro();
+        return;
+    }
+    if (pomodoro_page_visible_ && pomodoro_timer_.state() != PomodoroState::kIdle) {
+        ShowPomodoroPage();
+    }
+}
+
+void Application::ShowPomodoroPage() {
+    if (!pomodoro_page_visible_ || server_dashboard_active_) {
+        return;
+    }
+    const char* state = "running";
+    if (pomodoro_timer_.state() == PomodoroState::kPaused) {
+        state = "paused";
+    } else if (pomodoro_timer_.state() == PomodoroState::kFinished) {
+        state = "finished";
+    } else if (pomodoro_timer_.state() == PomodoroState::kIdle) {
+        return;
+    }
+    Board::GetInstance().GetDisplay()->ShowPomodoro(
+        state, pomodoro_timer_.RemainingSeconds(esp_timer_get_time()),
+        pomodoro_timer_.total_seconds(), pomodoro_label_.c_str());
+}
+
+void Application::SuspendPomodoroPage() {
+    pomodoro_page_visible_ = false;
+    Board::GetInstance().GetDisplay()->HidePomodoro();
+}
+
+void Application::FinishPomodoro() {
+    ESP_LOGI(TAG, "Pomodoro finished: %s", pomodoro_label_.c_str());
+    server_dashboard_active_ = false;
+    auto display = Board::GetInstance().GetDisplay();
+    display->HideClock();
+    display->HideServerStatus();
+    pomodoro_page_visible_ = true;
+
+    auto state = GetDeviceState();
+    if (state == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+        audio_service_.ResetDecoder();
+        SetDeviceState(kDeviceStateIdle);
+    } else if (state == kDeviceStateListening) {
+        if (protocol_) {
+            protocol_->SendStopListening();
+        }
+        SetDeviceState(kDeviceStateIdle);
+    }
+    ShowPomodoroPage();
+    audio_service_.PlaySound(Lang::Sounds::OGG_VIBRATION);
+}
+
+void Application::HandleReminderCommand(const std::string& action, int id,
+        int64_t trigger_at_epoch, const std::string& title, const std::string& kind) {
+    if (action == "schedule") {
+        if (!reminder_scheduler_.Schedule(id, trigger_at_epoch, title, kind)) {
+            ESP_LOGW(TAG, "Reminder schedule rejected id=%d", id);
+        }
+        return;
+    }
+    if (action == "cancel") {
+        reminder_scheduler_.Cancel(id);
+        if (reminder_page_visible_ && active_reminder_.id == id) {
+            DismissReminder();
+        }
+        return;
+    }
+    ESP_LOGW(TAG, "Unknown reminder action: %s", action.c_str());
+}
+
+void Application::UpdateReminderSchedule() {
+    if (reminder_page_visible_) {
+        reminder_ring_ticks_++;
+        if (active_reminder_.kind == "alarm" && reminder_ring_ticks_ % 10 == 0) {
+            audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+        }
+        return;
+    }
+    ScheduledReminder due;
+    if (!reminder_scheduler_.PopDue(static_cast<int64_t>(time(nullptr)), due)) {
+        return;
+    }
+    active_reminder_ = std::move(due);
+    reminder_page_visible_ = true;
+    reminder_ring_ticks_ = 0;
+    server_dashboard_active_ = false;
+    pomodoro_page_visible_ = false;
+
+    auto display = Board::GetInstance().GetDisplay();
+    display->HideClock();
+    display->HideServerStatus();
+    display->HidePomodoro();
+
+    const auto state = GetDeviceState();
+    if (state == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+        audio_service_.ResetDecoder();
+        SetDeviceState(kDeviceStateIdle);
+    } else if (state == kDeviceStateListening) {
+        if (protocol_) {
+            protocol_->SendStopListening();
+        }
+        SetDeviceState(kDeviceStateIdle);
+    }
+    ShowReminderPage();
+    audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+    ESP_LOGI(TAG, "Reminder fired id=%d kind=%s title=%s", active_reminder_.id,
+        active_reminder_.kind.c_str(), active_reminder_.title.c_str());
+}
+
+void Application::ShowReminderPage() {
+    if (!reminder_page_visible_) {
+        return;
+    }
+    char time_text[8] = "--:--";
+    const time_t now = time(nullptr);
+    if (now > 1700000000) {
+        struct tm local_time = {};
+        localtime_r(&now, &local_time);
+        snprintf(time_text, sizeof(time_text), "%02d:%02d", local_time.tm_hour,
+            local_time.tm_min);
+    }
+    Board::GetInstance().GetDisplay()->ShowReminder(active_reminder_.kind.c_str(),
+        active_reminder_.title.c_str(), time_text);
+}
+
+void Application::DismissReminder() {
+    if (!reminder_page_visible_) {
+        return;
+    }
+    reminder_page_visible_ = false;
+    reminder_ring_ticks_ = 0;
+    audio_service_.ResetDecoder();
+    Board::GetInstance().GetDisplay()->HideReminder();
+    ESP_LOGI(TAG, "Reminder dismissed id=%d", active_reminder_.id);
+    active_reminder_ = ScheduledReminder{};
+    if (pomodoro_timer_.state() != PomodoroState::kIdle) {
+        pomodoro_page_visible_ = true;
+        ShowPomodoroPage();
+    } else if (GetDeviceState() == kDeviceStateIdle) {
+        UpdateClockFace();
+    }
 }
 
 void Application::PlaySound(const std::string_view& sound) {

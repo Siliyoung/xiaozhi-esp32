@@ -266,6 +266,34 @@ private:
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
     }
 
+    void ScanI2cBus() {
+        ESP_LOGI(TAG, "I2C scan starting on SDA=%d SCL=%d", AUDIO_CODEC_I2C_SDA_PIN, AUDIO_CODEC_I2C_SCL_PIN);
+        int found = 0;
+        for (uint16_t address = 0x03; address <= 0x77; ++address) {
+            if (i2c_master_probe(codec_i2c_bus_, address, 20) == ESP_OK) {
+                ++found;
+                const char* hint = "unknown";
+                switch (address) {
+                    case 0x14:
+                    case 0x5D:
+                        hint = "possible GT911 touch controller";
+                        break;
+                    case 0x15:
+                        hint = "possible CST816 touch controller";
+                        break;
+                    case 0x18:
+                        hint = "expected ES8311 audio codec";
+                        break;
+                    case 0x38:
+                        hint = "possible FT5x06 touch controller";
+                        break;
+                }
+                ESP_LOGI(TAG, "I2C device found at 0x%02X (%s)", address, hint);
+            }
+        }
+        ESP_LOGI(TAG, "I2C scan complete: %d device(s) found", found);
+    }
+
     // SPI初始化
     void InitializeSpi() {
         ESP_LOGI(TAG, "Initialize SPI bus");
@@ -351,6 +379,7 @@ private:
 public:
     MovecallMoji2ESP32C5() : boot_button_(BOOT_BUTTON_GPIO) {  
         InitializeCodecI2c();
+        ScanI2cBus();
         InitializePowerSaveTimer();
         InitializeBatteryMonitor();
         InitializeSpi();

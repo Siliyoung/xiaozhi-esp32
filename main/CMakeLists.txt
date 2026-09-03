@@ -32,6 +32,8 @@ set(SOURCES "audio/audio_codec.cc"
             "mcp_server.cc"
             "system_info.cc"
             "application.cc"
+            "pomodoro_timer.cc"
+            "reminder_scheduler.cc"
             "ota.cc"
             "settings.cc"
             "device_state_machine.cc"
@@ -575,7 +577,7 @@ elseif(CONFIG_BOARD_TYPE_MOVECALL_MOJI2_ESP32C5)
     set(BOARD_TYPE "movecall-moji2-esp32c5")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
-    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+    set(DEFAULT_EMOJI_COLLECTION noto-emoji_128)
 elseif(CONFIG_BOARD_TYPE_MOVECALL_CUICAN_ESP32S3)
     set(BOARD_TYPE "movecall-cuican-esp32s3")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)

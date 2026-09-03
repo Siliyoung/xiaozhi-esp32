@@ -185,6 +185,27 @@ esp_err_t Ota::CheckVersion() {
         ESP_LOGI(TAG, "No websocket section found!");
     }
 
+    has_clock_context_ = false;
+    cJSON *clock = cJSON_GetObjectItem(root, "clock");
+    if (cJSON_IsObject(clock)) {
+        cJSON *city = cJSON_GetObjectItem(clock, "city");
+        cJSON *condition = cJSON_GetObjectItem(clock, "condition");
+        cJSON *temperature = cJSON_GetObjectItem(clock, "temperature_c");
+        cJSON *humidity = cJSON_GetObjectItem(clock, "humidity_percent");
+        if (cJSON_IsString(city) && cJSON_IsString(condition)) {
+            clock_city_ = city->valuestring;
+            clock_condition_ = condition->valuestring;
+            clock_temperature_c_ = cJSON_IsNumber(temperature)
+                ? static_cast<float>(temperature->valuedouble) : -1000.0f;
+            clock_humidity_percent_ = cJSON_IsNumber(humidity)
+                ? humidity->valueint : -1;
+            has_clock_context_ = true;
+            ESP_LOGI(TAG, "Clock context received: city=%s weather=%s temp=%.1f humidity=%d",
+                clock_city_.c_str(), clock_condition_.c_str(),
+                clock_temperature_c_, clock_humidity_percent_);
+        }
+    }
+
     has_server_time_ = false;
     cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
     if (cJSON_IsObject(server_time)) {
@@ -241,6 +262,64 @@ esp_err_t Ota::CheckVersion() {
     }
 
     cJSON_Delete(root);
+    return ESP_OK;
+}
+
+esp_err_t Ota::RefreshClockContext() {
+    std::string url = GetCheckVersionUrl();
+    const std::string ota_path = "/robot/ota/";
+    const auto ota_pos = url.find(ota_path);
+    if (ota_pos == std::string::npos) {
+        ESP_LOGE(TAG, "Cannot derive clock refresh URL from OTA URL: %s", url.c_str());
+        return ESP_ERR_INVALID_ARG;
+    }
+    url.replace(ota_pos, ota_path.size(), "/robot/clock/");
+
+    auto http = SetupHttp();
+    http->SetTimeout(10000);
+    if (!http->Open("GET", url)) {
+        int last_error = http->GetLastError();
+        ESP_LOGW(TAG, "Clock refresh request failed, code=0x%x", last_error);
+        return last_error;
+    }
+
+    const int status_code = http->GetStatusCode();
+    if (status_code != 200) {
+        ESP_LOGW(TAG, "Clock refresh returned HTTP %d", status_code);
+        http->Close();
+        return status_code;
+    }
+
+    std::string data = http->ReadAll();
+    http->Close();
+    cJSON* root = cJSON_Parse(data.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "Clock refresh returned invalid JSON");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON* city = cJSON_GetObjectItem(root, "city");
+    cJSON* condition = cJSON_GetObjectItem(root, "condition");
+    cJSON* temperature = cJSON_GetObjectItem(root, "temperature_c");
+    cJSON* humidity = cJSON_GetObjectItem(root, "humidity_percent");
+    has_clock_context_ = cJSON_IsString(city) && cJSON_IsString(condition);
+    if (has_clock_context_) {
+        clock_city_ = city->valuestring;
+        clock_condition_ = condition->valuestring;
+        clock_temperature_c_ = cJSON_IsNumber(temperature)
+            ? static_cast<float>(temperature->valuedouble) : -1000.0f;
+        clock_humidity_percent_ = cJSON_IsNumber(humidity) ? humidity->valueint : -1;
+    }
+    cJSON_Delete(root);
+
+    if (!has_clock_context_) {
+        ESP_LOGW(TAG, "Clock refresh response is missing weather fields");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    ESP_LOGI(TAG, "Clock context refreshed: city=%s weather=%s temp=%.1f humidity=%d",
+        clock_city_.c_str(), clock_condition_.c_str(),
+        clock_temperature_c_, clock_humidity_percent_);
     return ESP_OK;
 }
 

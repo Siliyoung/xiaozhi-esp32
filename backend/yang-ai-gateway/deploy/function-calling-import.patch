@@ -1,0 +1,11 @@
+diff --git a/backend/yang-ai-gateway/app/conversation_streaming.py b/backend/yang-ai-gateway/app/conversation_streaming.py
+--- a/backend/yang-ai-gateway/app/conversation_streaming.py
++++ b/backend/yang-ai-gateway/app/conversation_streaming.py
+@@ -11,7 +11,7 @@ from fastapi.routing import APIWebSocketRoute
+
+ from app import conversation_main as base
+-from app.dashscope_pipeline_streaming import DashScopeStreamingPipeline
++from app.dashscope_pipeline_tools import DashScopeStreamingPipeline
+ from app.dashscope_pipeline_v3 import NoSpeechRecognized
+ from app.email_alerting import EmailAlertConfig, EmailAlertManager
+ from app.main import compact_json, config, is_authorized, receive_device_hello

@@ -1,0 +1,21 @@
+diff --git a/main/application.cc b/main/application.cc
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -798,13 +798,16 @@ void Application::HandleWakeWordDetectedEvent() {
+         // Channel already opened, continue directly
+         ContinueWakeWordInvoke(wake_word);
+     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+         AbortSpeaking(kAbortReasonWakeWordDetected);
++        // Drop any Opus packets and decoded PCM already buffered on the device.
++        // Otherwise the listening-state transition waits for the old response
++        // to finish playing, which makes wake-word barge-in appear delayed.
++        audio_service_.ResetDecoder();
+         // Clear send queue to avoid sending residues to server
+         while (audio_service_.PopPacketFromSendQueue());
+
+         if (state == kDeviceStateListening) {
+             protocol_->SendStartListening(GetDefaultListeningMode());
+-            audio_service_.ResetDecoder();
+             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+             // Re-enable wake word detection as it was stopped by the detection itself
+             audio_service_.EnableWakeWordDetection(true);

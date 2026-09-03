@@ -39,11 +39,32 @@ void Protocol::SetError(const std::string& message) {
     }
 }
 
-void Protocol::SendAbortSpeaking(AbortReason reason) {
+void Protocol::SendAbortSpeaking(AbortReason reason, uint32_t metric_id,
+        int64_t client_uptime_ms) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"abort\"";
     if (reason == kAbortReasonWakeWordDetected) {
         message += ",\"reason\":\"wake_word_detected\"";
     }
+    if (metric_id != 0) {
+        message += ",\"metric_id\":" + std::to_string(metric_id);
+        message += ",\"client_uptime_ms\":" + std::to_string(client_uptime_ms);
+    }
+    message += "}";
+    SendText(message);
+}
+
+void Protocol::SendBargeInMetric(uint32_t metric_id, uint32_t round_trip_ms,
+        uint32_t local_clear_ms, int wifi_rssi_dbm, uint32_t free_sram_bytes,
+        uint32_t min_free_sram_bytes, uint32_t uplink_frames_dropped) {
+    std::string message = "{\"session_id\":\"" + session_id_ +
+        "\",\"type\":\"client_metric\",\"name\":\"barge_in\"";
+    message += ",\"metric_id\":" + std::to_string(metric_id);
+    message += ",\"round_trip_ms\":" + std::to_string(round_trip_ms);
+    message += ",\"local_clear_ms\":" + std::to_string(local_clear_ms);
+    message += ",\"wifi_rssi_dbm\":" + std::to_string(wifi_rssi_dbm);
+    message += ",\"free_sram_bytes\":" + std::to_string(free_sram_bytes);
+    message += ",\"min_free_sram_bytes\":" + std::to_string(min_free_sram_bytes);
+    message += ",\"uplink_frames_dropped\":" + std::to_string(uplink_frames_dropped);
     message += "}";
     SendText(message);
 }

@@ -13,6 +13,7 @@ public:
     ~Ota();
 
     esp_err_t CheckVersion();
+    esp_err_t RefreshClockContext();
     esp_err_t Activate();
     bool HasActivationChallenge() { return has_activation_challenge_; }
     bool HasNewVersion() { return has_new_version_; }
@@ -20,6 +21,7 @@ public:
     bool HasWebsocketConfig() { return has_websocket_config_; }
     bool HasActivationCode() { return has_activation_code_; }
     bool HasServerTime() { return has_server_time_; }
+    bool HasClockContext() { return has_clock_context_; }
     bool StartUpgrade(std::function<void(int progress, size_t speed)> callback);
     static bool Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback);
     void MarkCurrentVersionValid();
@@ -29,6 +31,10 @@ public:
     const std::string& GetFirmwareUrl() const { return firmware_url_; }
     const std::string& GetActivationMessage() const { return activation_message_; }
     const std::string& GetActivationCode() const { return activation_code_; }
+    const std::string& GetClockCity() const { return clock_city_; }
+    const std::string& GetClockCondition() const { return clock_condition_; }
+    float GetClockTemperatureC() const { return clock_temperature_c_; }
+    int GetClockHumidityPercent() const { return clock_humidity_percent_; }
     std::string GetCheckVersionUrl();
 
 private:
@@ -38,6 +44,7 @@ private:
     bool has_mqtt_config_ = false;
     bool has_websocket_config_ = false;
     bool has_server_time_ = false;
+    bool has_clock_context_ = false;
     bool has_activation_code_ = false;
     bool has_serial_number_ = false;
     bool has_activation_challenge_ = false;
@@ -46,6 +53,10 @@ private:
     std::string firmware_url_;
     std::string activation_challenge_;
     std::string serial_number_;
+    std::string clock_city_ = "--";
+    std::string clock_condition_ = "--";
+    float clock_temperature_c_ = -1000.0f;
+    int clock_humidity_percent_ = -1;
     int activation_timeout_ms_ = 30000;
 
     std::function<void(int progress, size_t speed)> upgrade_callback_;

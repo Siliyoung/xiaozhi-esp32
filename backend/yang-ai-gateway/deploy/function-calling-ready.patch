@@ -1,0 +1,10 @@
+diff --git a/backend/yang-ai-gateway/app/conversation_streaming.py b/backend/yang-ai-gateway/app/conversation_streaming.py
+--- a/backend/yang-ai-gateway/app/conversation_streaming.py
++++ b/backend/yang-ai-gateway/app/conversation_streaming.py
+@@ -49,7 +49,7 @@ async def ready() -> dict:
+     return {
+         "status": "ready" if usage_store.check_ready() else "error",
+         "service": "yang-ai-gateway",
+-        "mode": "streaming",
++        "mode": "streaming-function-calling",
+     }

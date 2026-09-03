@@ -49,9 +49,11 @@ idf.py fullclean
 **烧录固件：**
 ```bash
 idf.py flash
+idf.py -p COM6 flash
 ```
 
 **查看串口日志：**
 ```bash
 idf.py monitor
+idf.py -p COM6 monitor
 ```

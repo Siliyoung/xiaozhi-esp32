@@ -55,6 +55,43 @@ void Display::SetTheme(Theme* theme) {
     settings.SetString("theme", theme->name());
 }
 
+void Display::ShowServerStatus(float cpu_percent, float disk_percent, float network_rx_kbps, float network_tx_kbps, const char* sampled_at) {
+    ESP_LOGW(TAG, "Server status: CPU %.1f%%, disk %.1f%%, RX %.1f kbps, TX %.1f kbps",
+        cpu_percent, disk_percent, network_rx_kbps, network_tx_kbps);
+}
+
+void Display::HideServerStatus() {
+    // Displays without a graphical UI have nothing to restore.
+}
+
+void Display::ShowPomodoro(const char* state, int remaining_seconds, int total_seconds, const char* label) {
+    ESP_LOGW(TAG, "Pomodoro: state=%s remaining=%d total=%d label=%s",
+        state, remaining_seconds, total_seconds, label);
+}
+
+void Display::HidePomodoro() {
+    // Displays without a graphical UI have nothing to restore.
+}
+
+void Display::ShowReminder(const char* kind, const char* title, const char* time_text) {
+    ESP_LOGW(TAG, "Reminder: kind=%s title=%s time=%s", kind, title, time_text);
+}
+
+void Display::HideReminder() {
+    // Displays without a graphical UI have nothing to restore.
+}
+
+void Display::ShowClock(const char* time_text, const char* date_text, int battery_percent,
+        bool charging, const char* city, const char* condition, float temperature_c, int humidity_percent) {
+    ESP_LOGW(TAG, "Clock: %s %s battery=%d charging=%d city=%s weather=%s temp=%.1f humidity=%d",
+        time_text, date_text, battery_percent, charging, city, condition,
+        temperature_c, humidity_percent);
+}
+
+void Display::HideClock() {
+    // Displays without a graphical UI have nothing to restore.
+}
+
 void Display::SetPowerSaveMode(bool on) {
     ESP_LOGW(TAG, "SetPowerSaveMode: %d", on);
 }

@@ -37,6 +37,15 @@ public:
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void ClearChatMessages();
     virtual void SetTheme(Theme* theme);
+    virtual void ShowServerStatus(float cpu_percent, float disk_percent, float network_rx_kbps, float network_tx_kbps, const char* sampled_at);
+    virtual void HideServerStatus();
+    virtual void ShowPomodoro(const char* state, int remaining_seconds, int total_seconds, const char* label);
+    virtual void HidePomodoro();
+    virtual void ShowReminder(const char* kind, const char* title, const char* time_text);
+    virtual void HideReminder();
+    virtual void ShowClock(const char* time_text, const char* date_text, int battery_percent,
+        bool charging, const char* city, const char* condition, float temperature_c, int humidity_percent);
+    virtual void HideClock();
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
