@@ -18,16 +18,16 @@ from app.read_only_tools import get_current_weather
 
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _LOCK = threading.Lock()
-_TTL_SECONDS = max(300, min(int(os.getenv("CLOCK_WEATHER_TTL_SECONDS", "1800")), 7200))
+_TTL_SECONDS = max(300, min(int(os.getenv("CLOCK_WEATHER_TTL_SECONDS", "1500")), 7200))
 
 
 def _key(public_ip: str) -> str:
     return hashlib.sha256(public_ip.encode("ascii")).hexdigest()
 
 
-def build_clock_context(public_ip: str) -> dict[str, Any]:
+def build_clock_context(public_ip: str | None) -> dict[str, Any]:
     """Resolve weather without returning or logging the device public IP."""
-    cache_key = _key(public_ip)
+    cache_key = _key(public_ip or "configured-location")
     now = time.monotonic()
     with _LOCK:
         cached = _CACHE.get(cache_key)

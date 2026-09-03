@@ -27,6 +27,41 @@ LOCATION_CACHE_TTL_SECONDS = max(
 )
 
 
+def _configured_location() -> dict[str, Any] | None:
+    """Return an optional city-level location configured by the device owner."""
+    city = os.getenv("DEVICE_LOCATION_CITY", "").strip()
+    if not city:
+        return None
+
+    latitude_text = os.getenv("DEVICE_LOCATION_LATITUDE", "").strip()
+    longitude_text = os.getenv("DEVICE_LOCATION_LONGITUDE", "").strip()
+    if not latitude_text or not longitude_text:
+        raise RuntimeError(
+            "DEVICE_LOCATION_LATITUDE and DEVICE_LOCATION_LONGITUDE are required "
+            "when DEVICE_LOCATION_CITY is configured"
+        )
+    try:
+        latitude = float(latitude_text)
+        longitude = float(longitude_text)
+    except ValueError as exc:
+        raise RuntimeError("configured device coordinates are invalid") from exc
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        raise RuntimeError("configured device coordinates are out of range")
+
+    return {
+        "city": city,
+        "region": os.getenv("DEVICE_LOCATION_REGION", "").strip(),
+        "country": os.getenv("DEVICE_LOCATION_COUNTRY", "China").strip() or "China",
+        "country_code": os.getenv("DEVICE_LOCATION_COUNTRY_CODE", "CN").strip() or "CN",
+        "latitude": latitude,
+        "longitude": longitude,
+        "timezone": os.getenv("DEVICE_LOCATION_TIMEZONE", "Asia/Shanghai").strip()
+        or "Asia/Shanghai",
+        "accuracy": "configured-city",
+        "source": "configuration",
+    }
+
+
 def set_client_public_ip(ip_address: str | None) -> contextvars.Token:
     """Set an ephemeral client IP for the current conversation context."""
     return _CLIENT_IP.set(ip_address)
@@ -65,6 +100,10 @@ def _normalized_location(payload: dict[str, Any]) -> dict[str, Any]:
 
 def resolve_current_location() -> dict[str, Any]:
     """Resolve and cache the current device location without returning its IP."""
+    configured = _configured_location()
+    if configured is not None:
+        return configured
+
     ip_address = _CLIENT_IP.get()
     if not ip_address:
         raise RuntimeError("device public IP is unavailable")

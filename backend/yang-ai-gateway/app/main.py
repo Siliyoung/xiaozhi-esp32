@@ -97,11 +97,12 @@ async def health() -> dict:
 async def clock(request: Request) -> dict:
     """Return refreshed standby-clock weather without invoking any AI model."""
     public_ip = _request_public_ip(request)
-    if not public_ip:
+    try:
+        return await asyncio.to_thread(build_clock_context, public_ip)
+    except RuntimeError as exc:
         # A non-200 response makes the device retain its last valid weather
         # instead of replacing the standby clock with placeholder values.
-        raise HTTPException(status_code=503, detail="device public IP is unavailable")
-    return await asyncio.to_thread(build_clock_context, public_ip)
+        raise HTTPException(status_code=503, detail="device location is unavailable") from exc
 
 
 @app.api_route("/robot/ota/", methods=["GET", "POST"])

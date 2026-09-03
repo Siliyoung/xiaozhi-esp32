@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 from app.location_context import (
@@ -67,4 +68,23 @@ try:
 finally:
     reset_client_public_ip(token)
 
-print("location-context-smoke-ok cache=true privacy=true auto_time=true auto_weather=true")
+configured_environment = {
+    "DEVICE_LOCATION_CITY": "Configured City",
+    "DEVICE_LOCATION_REGION": "Configured Region",
+    "DEVICE_LOCATION_COUNTRY": "Test Country",
+    "DEVICE_LOCATION_COUNTRY_CODE": "TC",
+    "DEVICE_LOCATION_LATITUDE": "22.5000",
+    "DEVICE_LOCATION_LONGITUDE": "114.0000",
+    "DEVICE_LOCATION_TIMEZONE": "Asia/Shanghai",
+}
+with patch.dict(os.environ, configured_environment):
+    with patch("app.location_context.urllib.request.urlopen") as lookup:
+        configured = resolve_current_location()
+    assert lookup.call_count == 0
+    assert configured["city"] == "Configured City"
+    assert configured["accuracy"] == "configured-city"
+    assert configured["latitude"] == 22.5
+print(
+    "location-context-smoke-ok cache=true privacy=true "
+    "auto_time=true auto_weather=true configured_city=true"
+)

@@ -27,7 +27,9 @@ class FakeRequestWithoutPublicIp:
 calls = {"count": 0, "ip": None}
 
 
-def fake_build_clock_context(public_ip: str) -> dict:
+def fake_build_clock_context(public_ip: str | None) -> dict:
+    if public_ip is None:
+        raise RuntimeError("device public IP is unavailable")
     calls["count"] += 1
     calls["ip"] = public_ip
     return {
@@ -50,4 +52,20 @@ except HTTPException as exc:
 else:
     raise AssertionError("clock refresh must reject requests without a public IP")
 
-print("clock-refresh-endpoint-smoke-ok model_calls=0")
+
+def fake_configured_clock_context(public_ip: str | None) -> dict:
+    assert public_ip is None
+    return {
+        "city": "Configured City",
+        "condition": "Cloudy",
+        "temperature_c": 27.0,
+        "humidity_percent": 72,
+    }
+
+
+main.build_clock_context = fake_configured_clock_context
+configured_result = asyncio.run(main.clock(FakeRequestWithoutPublicIp()))
+assert configured_result["city"] == "Configured City"
+assert configured_result["condition"] == "Cloudy"
+assert configured_result["humidity_percent"] == 72
+print("clock-refresh-endpoint-smoke-ok model_calls=0 configured_city=true")
