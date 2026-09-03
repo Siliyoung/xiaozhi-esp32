@@ -6,6 +6,7 @@ import json
 import os
 from unittest.mock import patch
 
+from app import location_context
 from app.location_context import (
     reset_client_public_ip,
     resolve_current_location,
@@ -68,6 +69,46 @@ try:
 finally:
     reset_client_public_ip(token)
 
+
+class FakeAmapResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, limit: int) -> bytes:
+        return json.dumps(
+            {
+                "status": "1",
+                "info": "OK",
+                "infocode": "10000",
+                "province": "Test Province",
+                "city": "Test City",
+                "adcode": "000000",
+                "rectangle": "100.0,20.0;101.0,21.0",
+            }
+        ).encode()
+
+
+location_context._CACHE.clear()
+with patch.dict(os.environ, {"AMAP_WEB_KEY": "test-amap-key"}):
+    token = set_client_public_ip("203.0.113.10")
+    try:
+        with patch(
+            "app.location_context.urllib.request.urlopen",
+            return_value=FakeAmapResponse(),
+        ) as lookup:
+            amap_location = resolve_current_location()
+    finally:
+        reset_client_public_ip(token)
+assert lookup.call_count == 1
+assert amap_location["source"] == "amap"
+assert amap_location["city"] == "Test City"
+assert amap_location["adcode"] == "000000"
+
 configured_environment = {
     "DEVICE_LOCATION_CITY": "Configured City",
     "DEVICE_LOCATION_REGION": "Configured Region",
@@ -86,5 +127,5 @@ with patch.dict(os.environ, configured_environment):
     assert configured["latitude"] == 22.5
 print(
     "location-context-smoke-ok cache=true privacy=true "
-    "auto_time=true auto_weather=true configured_city=true"
+    "auto_time=true auto_weather=true amap=true configured_city=true"
 )

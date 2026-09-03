@@ -102,11 +102,58 @@ def get_current_location(arguments: dict[str, Any]) -> dict[str, Any]:
     return resolve_current_location()
 
 
+def _number_or_none(value: Any, converter: type = float) -> Any:
+    if value in (None, "", "none", "None"):
+        return None
+    try:
+        return converter(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_amap_weather(location: dict[str, Any], api_key: str) -> dict[str, Any]:
+    query = urllib.parse.urlencode(
+        {
+            "city": location["adcode"],
+            "extensions": "base",
+            "output": "json",
+            "key": api_key,
+        }
+    )
+    payload = _get_json(f"https://restapi.amap.com/v3/weather/weatherInfo?{query}")
+    lives = payload.get("lives") or []
+    if payload.get("status") != "1" or not lives:
+        raise RuntimeError("AMap weather lookup failed")
+    live = lives[0]
+    return {
+        "found": True,
+        "location": location["city"],
+        "region": live.get("province") or location.get("region", ""),
+        "country": location.get("country", "China"),
+        "observed_at": live.get("reporttime"),
+        "condition": str(live.get("weather") or "--"),
+        "temperature_c": _number_or_none(live.get("temperature")),
+        "apparent_temperature_c": None,
+        "humidity_percent": _number_or_none(live.get("humidity"), int),
+        "precipitation_mm": None,
+        "wind_speed_kmh": _number_or_none(live.get("windpower")),
+        "source": "AMap",
+        "automatic_location": True,
+        "location_accuracy": "city-level",
+    }
+
+
 def get_current_weather(arguments: dict[str, Any]) -> dict[str, Any]:
     location = str(arguments.get("location") or "").strip()
     automatic_location = not location
     if automatic_location:
         current_location = resolve_current_location()
+        amap_key = os.getenv("AMAP_WEB_KEY", "").strip()
+        if amap_key and current_location.get("source") == "amap" and current_location.get("adcode"):
+            try:
+                return _get_amap_weather(current_location, amap_key)
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+                pass
         place = {
             "name": current_location["city"],
             "admin1": current_location["region"],

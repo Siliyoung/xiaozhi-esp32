@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -18,6 +19,7 @@ _CLIENT_IP: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
+logger = logging.getLogger("yang-ai-gateway.location")
 
 LOCATION_TIMEOUT_SECONDS = max(
     1.0, min(float(os.getenv("LOCATION_TIMEOUT_SECONDS", "5")), 15.0)
@@ -75,6 +77,50 @@ def _cache_key(ip_address: str) -> str:
     return hashlib.sha256(ip_address.encode("ascii")).hexdigest()
 
 
+def _amap_location(ip_address: str, api_key: str) -> dict[str, Any]:
+    query = urllib.parse.urlencode(
+        {"ip": ip_address, "output": "json", "key": api_key}
+    )
+    request = urllib.request.Request(
+        f"https://restapi.amap.com/v3/ip?{query}",
+        headers={"User-Agent": "yang-ai-gateway/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=LOCATION_TIMEOUT_SECONDS) as response:
+        if response.status != 200:
+            raise RuntimeError(f"AMap IP location HTTP {response.status}")
+        payload = json.loads(response.read(64_000).decode("utf-8"))
+    if payload.get("status") != "1" or payload.get("infocode") != "10000":
+        raise RuntimeError("AMap IP location lookup failed")
+
+    city_value = payload.get("city")
+    city = city_value if isinstance(city_value, str) else ""
+    province_value = payload.get("province")
+    province = province_value if isinstance(province_value, str) else ""
+    adcode = str(payload.get("adcode") or "")
+    rectangle = str(payload.get("rectangle") or "")
+    if not city or not adcode or ";" not in rectangle:
+        raise RuntimeError("AMap IP location response is incomplete")
+    try:
+        southwest, northeast = rectangle.split(";", 1)
+        west, south = (float(value) for value in southwest.split(",", 1))
+        east, north = (float(value) for value in northeast.split(",", 1))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("AMap IP location rectangle is invalid") from exc
+
+    return {
+        "city": city[:-1] if city.endswith("\u5e02") else city,
+        "region": province,
+        "country": "China",
+        "country_code": "CN",
+        "latitude": (south + north) / 2,
+        "longitude": (west + east) / 2,
+        "timezone": "Asia/Shanghai",
+        "accuracy": "city-level",
+        "source": "amap",
+        "adcode": adcode,
+    }
+
+
 def _normalized_location(payload: dict[str, Any]) -> dict[str, Any]:
     if not payload.get("success"):
         raise RuntimeError("IP location lookup failed")
@@ -116,6 +162,18 @@ def resolve_current_location() -> dict[str, Any]:
             return dict(cached[1])
         if cached:
             _CACHE.pop(key, None)
+
+    amap_key = os.getenv("AMAP_WEB_KEY", "").strip()
+    if amap_key:
+        try:
+            location = _amap_location(ip_address, amap_key)
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("AMap IP location failed error_type=%s", type(exc).__name__)
+            raise RuntimeError("AMap IP location is unavailable") from exc
+        else:
+            with _CACHE_LOCK:
+                _CACHE[key] = (now + LOCATION_CACHE_TTL_SECONDS, location)
+            return dict(location)
 
     fields = (
         "success,city,region,country,country_code,latitude,longitude,timezone"
